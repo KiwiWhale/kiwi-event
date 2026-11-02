@@ -26,7 +26,7 @@ fun main(): Unit = runBlocking {
                 UserCreated(1, "kiwi")
             )
         }
-    } catch (exception: TimeoutCancellationException) {
+    } catch (_: TimeoutCancellationException) {
         println("Event processing timed out")
     }
 }
