@@ -1,25 +1,25 @@
-package io.github.kiwiwhale.kiwievent.example.synchronous
+package io.github.kiwiwhale.kiwievent.example.priority
 
 import io.github.kiwiwhale.kiwievent.core.EventBus
 import io.github.kiwiwhale.kiwievent.core.subscribe
-import io.github.kiwiwhale.kiwievent.example.event.UserCreated
+import io.github.kiwiwhale.kiwievent.example.event.OrderCompleted
 
-fun main()  {
+fun main() {
     val eventBus = EventBus()
 
-    eventBus.subscribe<UserCreated>(priority = 1) {
-        println("Low priority handler")
+    eventBus.subscribe<OrderCompleted>(priority = 1) {
+        println("Low priority: Send notification")
     }
 
-    eventBus.subscribe<UserCreated>(priority = 10) {
-        println("High priority handler")
+    eventBus.subscribe<OrderCompleted>(priority = 10) {
+        println("High priority: Validate payment")
     }
 
-    eventBus.subscribe<UserCreated>(priority = 5) {
-        println("Medium priority handler")
+    eventBus.subscribe<OrderCompleted>(priority = 5) {
+        println("Medium priority: Update inventory")
     }
 
     eventBus.publish(
-        UserCreated(1, "kiwi")
+        OrderCompleted(100, 1, 50000)
     )
 }

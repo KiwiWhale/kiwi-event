@@ -1,22 +1,39 @@
 plugins {
-    kotlin("jvm") version "2.4.20"
+    alias(libs.plugins.kotlin.jvm) apply false
 }
 
 group = "io.github.kiwiwhale.kiwievent"
 version = "1.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
+allprojects {
+    group = rootProject.group
+    version = rootProject.version
+
+    repositories {
+        mavenCentral()
+    }
 }
 
-dependencies {
-    testImplementation(kotlin("test"))
-}
+subprojects {
+    pluginManager.apply("java-library")
+    pluginManager.apply("org.jetbrains.kotlin.jvm")
 
-kotlin {
-    jvmToolchain(25)
-}
+    if (name != "kiwi-event-example") {
+        pluginManager.apply("maven-publish")
 
-tasks.test {
-    useJUnitPlatform()
+        extensions.configure<JavaPluginExtension> {
+            withSourcesJar()
+        }
+
+        extensions.configure<PublishingExtension> {
+            publications {
+                create<MavenPublication>("mavenJava") {
+                    from(components["java"])
+                    groupId = project.group.toString()
+                    artifactId = project.name
+                    version = project.version.toString()
+                }
+            }
+        }
+    }
 }

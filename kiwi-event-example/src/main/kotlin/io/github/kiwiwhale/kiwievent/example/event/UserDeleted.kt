@@ -1,4 +1,5 @@
 package io.github.kiwiwhale.kiwievent.example.event
 
-class UserDeleted {
-}
+data class UserDeleted(
+    val userId: Long
+)

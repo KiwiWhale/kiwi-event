@@ -1,28 +1,33 @@
-package io.github.kiwiwhale.kiwievent.example.synchronous
+package io.github.kiwiwhale.kiwievent.example.failure
 
 import io.github.kiwiwhale.kiwievent.core.EventBus
 import io.github.kiwiwhale.kiwievent.core.subscribe
-import io.github.kiwiwhale.kiwievent.example.event.UserCreated
+import io.github.kiwiwhale.kiwievent.example.event.OrderCompleted
 
 fun main() {
     val eventBus = EventBus()
 
-    eventBus.subscribe<UserCreated> {
-        error("Something went wrong")
+    eventBus.subscribe<OrderCompleted> {
+        println("Payment processing")
+        error("Payment processing failed")
     }
 
-    eventBus.subscribe<UserCreated> {
-        println("Second handler still executes")
+    eventBus.subscribe<OrderCompleted> {
+        println("Inventory update")
+    }
+
+    eventBus.subscribe<OrderCompleted> {
+        println("Notification sent")
     }
 
     val result = eventBus.publish(
-        UserCreated(1, "kiwi")
+        OrderCompleted(100, 1, 50000)
     )
 
     println("Successful: ${result.successfulHandlers}")
     println("Failed: ${result.failedHandlers}")
 
-    result.failures.forEach { failure ->
-        println(failure.cause.message)
+    result.failures.forEach {
+        println("Error: ${it.cause.message}")
     }
 }

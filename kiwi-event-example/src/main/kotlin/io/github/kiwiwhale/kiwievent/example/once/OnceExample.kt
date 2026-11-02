@@ -1,4 +1,4 @@
-package io.github.kiwiwhale.kiwievent.example.synchronous
+package io.github.kiwiwhale.kiwievent.example.once
 
 import io.github.kiwiwhale.kiwievent.core.EventBus
 import io.github.kiwiwhale.kiwievent.core.subscribe
@@ -7,8 +7,8 @@ import io.github.kiwiwhale.kiwievent.example.event.UserCreated
 fun main() {
     val eventBus = EventBus()
 
-    eventBus.subscribe<UserCreated>(once = true) {
-        println("This handler executes only once")
+    val subscription = eventBus.subscribe<UserCreated>(once = true) {
+        println("First user received: ${it.username}")
     }
 
     repeat(3) { index ->
@@ -16,4 +16,6 @@ fun main() {
             UserCreated(index.toLong(), "user-$index")
         )
     }
+
+    println("Subscription active: ${subscription.isActive}")
 }

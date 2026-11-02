@@ -1,4 +1,4 @@
-package io.github.kiwiwhale.kiwievent.example.synchronous
+package io.github.kiwiwhale.kiwievent.example.basic
 
 import io.github.kiwiwhale.kiwievent.core.EventBus
 import io.github.kiwiwhale.kiwievent.core.subscribe

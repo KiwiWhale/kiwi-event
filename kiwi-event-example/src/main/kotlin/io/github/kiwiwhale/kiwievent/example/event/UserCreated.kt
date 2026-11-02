@@ -1,4 +1,6 @@
 package io.github.kiwiwhale.kiwievent.example.event
 
-class UserCreated {
-}
+data class UserCreated(
+    val userId: Long,
+    val username: String
+)

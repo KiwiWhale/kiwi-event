@@ -1,4 +1,4 @@
-package io.github.kiwiwhale.kiwievent.example.coroutines
+package io.github.kiwiwhale.kiwievent.example.basic
 
 import io.github.kiwiwhale.kiwievent.coroutines.SuspendingEventBus
 import io.github.kiwiwhale.kiwievent.coroutines.subscribe
@@ -11,14 +11,17 @@ fun main() = runBlocking {
     val eventBus = SuspendingEventBus()
 
     eventBus.subscribe<UserCreated> { event ->
-        delay(100.milliseconds)
+        println("Processing user: ${event.username}")
 
-        println("Sending welcome email to ${event.username}")
+        delay(500.milliseconds)
+
+        println("Welcome email sent")
     }
 
     val result = eventBus.publish(
         UserCreated(1, "kiwi")
     )
 
+    println("Attempted handlers: ${result.attemptedHandlers}")
     println("Successful handlers: ${result.successfulHandlers}")
 }
