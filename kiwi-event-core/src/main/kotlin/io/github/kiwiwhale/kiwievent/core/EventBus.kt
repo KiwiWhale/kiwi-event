@@ -1,47 +1,58 @@
 package io.github.kiwiwhale.kiwievent.core
 
-import io.github.kiwiwhale.kiwievent.core.internal.EventDispatcher
 import kotlin.reflect.KClass
 
-class EventBus {
+class EventBus internal constructor(
+    private val registry: EventRegistry
+) : AutoCloseable {
 
-    private val dispatcher =
-        EventDispatcher<(Any) -> Unit>()
+    private val dispatcher = EventDispatcher(registry)
 
-    fun <E : Any> subscribe(
-        eventType: KClass<E>,
-        options: SubscriptionOptions = SubscriptionOptions(),
-        handler: (E) -> Unit
-    ): Subscription {
-        val wrappedHandler: (Any) -> Unit = { event ->
-            @Suppress("UNCHECKED_CAST")
-            handler(event as E)
+    val isClosed: Boolean
+        get() = registry.isClosed
+
+    fun emit(event: Any): EventResult {
+        check(!isClosed) {
+            "EventBus is already closed."
         }
 
-        return dispatcher.register(
-            eventType = eventType,
-            options = options,
-            handler = wrappedHandler
+        return dispatcher.dispatch(event)
+    }
+
+    fun <T : Any> subscribe(
+        type: KClass<T>,
+        priority: Int = 0,
+        filter: (T) -> Boolean = { true },
+        handler: (T) -> Unit
+    ): Subscription {
+        return registry.register(
+            type = type,
+            priority = priority,
+            filter = filter,
+            action = handler
         )
     }
 
-    fun publish(event: Any): PublishResult =
-        dispatcher.dispatch(
-            event = event,
-            eventType = event::class
-        ) { handler, publishedEvent ->
-            handler(publishedEvent)
+    inline fun <reified T : Any> subscribe(
+        priority: Int = 0,
+        noinline filter: (T) -> Boolean = { true },
+        noinline handler: (T) -> Unit
+    ): Subscription {
+        return subscribe(
+            type = T::class,
+            priority = priority,
+            filter = filter,
+            handler = handler
+        )
+    }
+
+    override fun close() {
+        registry.clear()
+    }
+
+    companion object {
+        fun create(): EventBus {
+            return EventBus(EventRegistry())
         }
-
-    fun <E : Any> subscriberCount(eventType: KClass<E>): Int =
-        dispatcher.subscriberCount(eventType)
-
-    fun <E : Any> unsubscribeAll(eventType: KClass<E>): Int =
-        dispatcher.clear(eventType)
-
-    fun clear(): Int =
-        dispatcher.clear()
-
-    val totalSubscriberCount: Int
-        get() = dispatcher.totalSubscriberCount
+    }
 }

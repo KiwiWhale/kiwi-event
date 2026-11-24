@@ -1,378 +1,579 @@
 package io.github.kiwiwhale.kiwievent.core
 
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
+import io.github.kiwiwhale.kiwievent.core.dsl.eventBus
+import io.github.kiwiwhale.kiwievent.core.dsl.on
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 class EventBusTest {
 
-    private data class UserCreated(val userId: Long)
+    data class UserCreated(
+        val id: Long,
+        val active: Boolean = true
+    )
 
-    private data class PaymentCompleted(val orderId: Long)
+    data class UserDeleted(
+        val id: Long
+    )
+
+    open class BaseEvent
+
+    class ChildEvent : BaseEvent()
 
     @Test
-    fun `이벤트를 구독자에게 전달한다`() {
-        val eventBus = EventBus()
+    fun `구독한 이벤트를 정상적으로 발행한다`() {
         var received: UserCreated? = null
 
-        eventBus.subscribe<UserCreated> {
-            received = it
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    received = it
+                }
+            }
         }
 
-        val result = eventBus.publish(UserCreated(100))
+        val event = UserCreated(1)
+        val result = bus.emit(event)
 
-        assertEquals(100L, received?.userId)
-        assertEquals(1, result.attemptedHandlers)
-        assertEquals(1, result.successfulHandlers)
+        assertEquals(event, received)
+        assertEquals(1, result.executedCount)
+        assertEquals(0, result.skippedCount)
         assertTrue(result.isSuccess)
-        assertTrue(result.wasHandled)
+
+        bus.close()
     }
 
     @Test
-    fun `하나의 이벤트를 여러 구독자에게 전달한다`() {
-        val eventBus = EventBus()
-        val received = mutableListOf<Long>()
+    fun `관련 없는 이벤트는 구독자에게 전달하지 않는다`() {
+        var executed = false
 
-        eventBus.subscribe<UserCreated> {
-            received.add(it.userId)
-        }
-
-        eventBus.subscribe<UserCreated> {
-            received.add(it.userId)
-        }
-
-        val result = eventBus.publish(UserCreated(100))
-
-        assertEquals(listOf(100L, 100L), received)
-        assertEquals(2, result.successfulHandlers)
-    }
-
-    @Test
-    fun `구독 등록 순서대로 실행한다`() {
-        val eventBus = EventBus()
-        val order = mutableListOf<Int>()
-
-        repeat(3) { index ->
-            eventBus.subscribe<UserCreated> {
-                order.add(index + 1)
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    executed = true
+                }
             }
         }
 
-        eventBus.publish(UserCreated(100))
+        val result = bus.emit(UserDeleted(1))
 
-        assertEquals(listOf(1, 2, 3), order)
+        assertFalse(executed)
+        assertEquals(0, result.executedCount)
+        assertTrue(result.isSuccess)
+
+        bus.close()
     }
 
     @Test
-    fun `우선순위가 높은 Handler를 먼저 실행한다`() {
-        val eventBus = EventBus()
-        val order = mutableListOf<Int>()
+    fun `부모 이벤트 타입으로 자식 이벤트를 구독할 수 있다`() {
+        var executed = false
 
-        eventBus.subscribe<UserCreated>(priority = 1) {
-            order.add(1)
-        }
-
-        eventBus.subscribe<UserCreated>(priority = 10) {
-            order.add(10)
-        }
-
-        eventBus.subscribe<UserCreated>(priority = 5) {
-            order.add(5)
-        }
-
-        eventBus.publish(UserCreated(100))
-
-        assertEquals(listOf(10, 5, 1), order)
-    }
-
-    @Test
-    fun `우선순위가 같으면 등록 순서를 유지한다`() {
-        val eventBus = EventBus()
-        val order = mutableListOf<Int>()
-
-        repeat(3) { index ->
-            eventBus.subscribe<UserCreated>(priority = 5) {
-                order.add(index + 1)
+        val bus = eventBus {
+            on<BaseEvent> {
+                handle {
+                    executed = true
+                }
             }
         }
 
-        eventBus.publish(UserCreated(100))
+        bus.emit(ChildEvent())
 
-        assertEquals(listOf(1, 2, 3), order)
+        assertTrue(executed)
+
+        bus.close()
     }
 
     @Test
-    fun `일회성 구독은 한 번만 실행한다`() {
-        val eventBus = EventBus()
-        var count = 0
+    fun `동일한 이벤트에 여러 핸들러를 등록할 수 있다`() {
+        val executionOrder = mutableListOf<Int>()
 
-        val subscription = eventBus.subscribe<UserCreated>(once = true) {
-            count++
+        val bus = eventBus {
+            repeat(3) { index ->
+                on<UserCreated> {
+                    handle {
+                        executionOrder += index
+                    }
+                }
+            }
         }
 
-        eventBus.publish(UserCreated(100))
-        eventBus.publish(UserCreated(200))
+        val result = bus.emit(UserCreated(1))
 
-        assertEquals(1, count)
-        assertFalse(subscription.isActive)
+        assertEquals(listOf(0, 1, 2), executionOrder)
+        assertEquals(3, result.executedCount)
+
+        bus.close()
     }
 
     @Test
-    fun `일회성 구독은 재진입 발행에서도 한 번만 실행한다`() {
-        val eventBus = EventBus()
-        var count = 0
+    fun `우선순위가 높은 핸들러부터 실행한다`() {
+        val executionOrder = mutableListOf<Int>()
 
-        eventBus.subscribe<UserCreated>(once = true) {
-            count++
-            eventBus.publish(UserCreated(200))
+        val bus = eventBus {
+            on<UserCreated> {
+                priority(0)
+                handle { executionOrder += 0 }
+            }
+
+            on<UserCreated> {
+                priority(10)
+                handle { executionOrder += 10 }
+            }
+
+            on<UserCreated> {
+                priority(5)
+                handle { executionOrder += 5 }
+            }
         }
 
-        eventBus.publish(UserCreated(100))
+        bus.emit(UserCreated(1))
 
-        assertEquals(1, count)
+        assertEquals(listOf(10, 5, 0), executionOrder)
+
+        bus.close()
     }
 
     @Test
-    fun `구독을 취소하면 이벤트를 전달하지 않는다`() {
-        val eventBus = EventBus()
-        var received = false
+    fun `동일한 우선순위에서는 등록 순서를 유지한다`() {
+        val executionOrder = mutableListOf<Int>()
 
-        val subscription = eventBus.subscribe<UserCreated> {
-            received = true
+        val bus = eventBus {
+            repeat(5) { index ->
+                on<UserCreated> {
+                    priority(10)
+                    handle {
+                        executionOrder += index
+                    }
+                }
+            }
         }
 
-        subscription.cancel()
-        eventBus.publish(UserCreated(100))
+        bus.emit(UserCreated(1))
 
-        assertFalse(received)
-        assertFalse(subscription.isActive)
+        assertEquals(listOf(0, 1, 2, 3, 4), executionOrder)
+
+        bus.close()
     }
 
     @Test
-    fun `구독을 여러 번 취소해도 안전하다`() {
-        val eventBus = EventBus()
+    fun `필터 조건을 만족하는 이벤트만 실행한다`() {
+        var executed = false
 
-        val subscription = eventBus.subscribe<UserCreated> {}
+        val bus = eventBus {
+            on<UserCreated> {
+                filter { it.active }
 
-        subscription.cancel()
-        subscription.cancel()
+                handle {
+                    executed = true
+                }
+            }
+        }
 
-        assertFalse(subscription.isActive)
-        assertEquals(0, eventBus.totalSubscriberCount)
+        val result = bus.emit(UserCreated(1, active = false))
+
+        assertFalse(executed)
+        assertEquals(0, result.executedCount)
+        assertEquals(1, result.skippedCount)
+
+        bus.close()
     }
 
     @Test
-    fun `Handler 실패 후에도 다음 Handler를 실행한다`() {
-        val eventBus = EventBus()
-        var secondExecuted = false
+    fun `필터에서 예외가 발생해도 다음 핸들러를 실행한다`() {
+        var executed = false
 
-        eventBus.subscribe<UserCreated> {
-            error("Handler failed")
+        val bus = eventBus {
+            on<UserCreated> {
+                filter {
+                    throw IllegalStateException("Filter failed")
+                }
+
+                handle {}
+            }
+
+            on<UserCreated> {
+                handle {
+                    executed = true
+                }
+            }
         }
 
-        eventBus.subscribe<UserCreated> {
-            secondExecuted = true
-        }
+        val result = bus.emit(UserCreated(1))
 
-        val result = eventBus.publish(UserCreated(100))
-
-        assertTrue(secondExecuted)
-        assertEquals(2, result.attemptedHandlers)
-        assertEquals(1, result.successfulHandlers)
-        assertEquals(1, result.failedHandlers)
-        assertTrue(result.hasFailures)
-    }
-
-    @Test
-    fun `실패한 Handler의 예외 정보를 반환한다`() {
-        val eventBus = EventBus()
-
-        eventBus.subscribe<UserCreated> {
-            error("처리 실패")
-        }
-
-        val result = eventBus.publish(UserCreated(100))
-
+        assertTrue(executed)
+        assertEquals(1, result.executedCount)
+        assertEquals(1, result.skippedCount)
         assertEquals(1, result.failures.size)
-        assertEquals("처리 실패", result.failures.first().cause.message)
+        assertEquals(FailurePhase.FILTER, result.failures.first().phase)
+
+        bus.close()
     }
 
     @Test
-    fun `서로 다른 이벤트 타입의 구독자를 구분한다`() {
-        val eventBus = EventBus()
+    fun `핸들러에서 예외가 발생해도 다음 핸들러를 실행한다`() {
+        var executed = false
 
-        var userExecuted = false
-        var paymentExecuted = false
-
-        eventBus.subscribe<UserCreated> {
-            userExecuted = true
-        }
-
-        eventBus.subscribe<PaymentCompleted> {
-            paymentExecuted = true
-        }
-
-        eventBus.publish(UserCreated(100))
-
-        assertTrue(userExecuted)
-        assertFalse(paymentExecuted)
-    }
-
-    @Test
-    fun `구독자가 없으면 성공한 빈 결과를 반환한다`() {
-        val eventBus = EventBus()
-
-        val result = eventBus.publish(UserCreated(100))
-
-        assertEquals(0, result.attemptedHandlers)
-        assertEquals(0, result.dispatchedHandlers)
-        assertEquals(0, result.skippedHandlers)
-        assertTrue(result.isSuccess)
-        assertFalse(result.wasHandled)
-    }
-
-    @Test
-    fun `구독자 수를 조회한다`() {
-        val eventBus = EventBus()
-
-        eventBus.subscribe<UserCreated> {}
-        eventBus.subscribe<UserCreated> {}
-
-        assertEquals(2, eventBus.subscriberCount<UserCreated>())
-        assertEquals(2, eventBus.totalSubscriberCount)
-    }
-
-    @Test
-    fun `특정 이벤트 타입의 구독만 제거한다`() {
-        val eventBus = EventBus()
-
-        val user = eventBus.subscribe<UserCreated> {}
-        val payment = eventBus.subscribe<PaymentCompleted> {}
-
-        val removed = eventBus.unsubscribeAll<UserCreated>()
-
-        assertEquals(1, removed)
-        assertFalse(user.isActive)
-        assertTrue(payment.isActive)
-        assertEquals(1, eventBus.totalSubscriberCount)
-    }
-
-    @Test
-    fun `전체 구독을 제거한다`() {
-        val eventBus = EventBus()
-
-        val first = eventBus.subscribe<UserCreated> {}
-        val second = eventBus.subscribe<PaymentCompleted> {}
-
-        val removed = eventBus.clear()
-
-        assertEquals(2, removed)
-        assertFalse(first.isActive)
-        assertFalse(second.isActive)
-        assertEquals(0, eventBus.totalSubscriberCount)
-    }
-
-    @Test
-    fun `이벤트 발행 중 추가된 구독자는 현재 발행에 참여하지 않는다`() {
-        val eventBus = EventBus()
-        var lateExecuted = false
-
-        eventBus.subscribe<UserCreated> {
-            eventBus.subscribe<UserCreated> {
-                lateExecuted = true
-            }
-        }
-
-        eventBus.publish(UserCreated(100))
-
-        assertFalse(lateExecuted)
-
-        eventBus.publish(UserCreated(200))
-
-        assertTrue(lateExecuted)
-    }
-
-    @Test
-    fun `발행 중 취소된 다음 Handler는 실행하지 않는다`() {
-        val eventBus = EventBus()
-        var secondExecuted = false
-
-        lateinit var second: Subscription
-
-        eventBus.subscribe<UserCreated> {
-            second.cancel()
-        }
-
-        second = eventBus.subscribe<UserCreated> {
-            secondExecuted = true
-        }
-
-        eventBus.publish(UserCreated(100))
-
-        assertFalse(secondExecuted)
-    }
-
-    @Test
-    fun `여러 스레드에서 일회성 구독을 동시에 발행해도 한 번만 실행한다`() {
-        val eventBus = EventBus()
-        val executionCount = AtomicInteger()
-
-        val threadCount = 16
-        val ready = CountDownLatch(threadCount)
-        val start = CountDownLatch(1)
-        val executor = Executors.newFixedThreadPool(threadCount)
-
-        eventBus.subscribe<UserCreated>(once = true) {
-            executionCount.incrementAndGet()
-        }
-
-        try {
-            val tasks = (1..threadCount).map {
-                executor.submit {
-                    ready.countDown()
-                    start.await()
-                    eventBus.publish(UserCreated(it.toLong()))
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    throw IllegalStateException("Handler failed")
                 }
             }
 
-            assertTrue(ready.await(5, TimeUnit.SECONDS))
-            start.countDown()
+            on<UserCreated> {
+                handle {
+                    executed = true
+                }
+            }
+        }
 
-            tasks.forEach {
-                it.get(5, TimeUnit.SECONDS)
+        val result = bus.emit(UserCreated(1))
+
+        assertTrue(executed)
+        assertEquals(1, result.executedCount)
+        assertEquals(1, result.failures.size)
+        assertEquals(FailurePhase.HANDLER, result.failures.first().phase)
+
+        bus.close()
+    }
+
+    @Test
+    fun `실행 결과의 통계를 정확하게 반환한다`() {
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {}
             }
 
-            assertEquals(1, executionCount.get())
-        } finally {
-            executor.shutdownNow()
+            on<UserCreated> {
+                filter { false }
+                handle {}
+            }
+
+            on<UserCreated> {
+                handle {
+                    throw IllegalStateException()
+                }
+            }
+        }
+
+        val result = bus.emit(UserCreated(1))
+
+        assertEquals(1, result.executedCount)
+        assertEquals(1, result.skippedCount)
+        assertEquals(1, result.failures.size)
+        assertTrue(result.hasFailures)
+        assertFalse(result.isSuccess)
+
+        bus.close()
+    }
+
+    @Test
+    fun `DSL에서 반환된 구독을 개별적으로 해제할 수 있다`() {
+        var executed = false
+        lateinit var subscription: Subscription
+
+        val bus = eventBus {
+            subscription = on<UserCreated> {
+                handle {
+                    executed = true
+                }
+            }
+        }
+
+        subscription.dispose()
+
+        val result = bus.emit(UserCreated(1))
+
+        assertTrue(subscription.isDisposed)
+        assertFalse(executed)
+        assertEquals(0, result.executedCount)
+
+        bus.close()
+    }
+
+    @Test
+    fun `구독을 여러 번 해제해도 안전하다`() {
+        var executed = 0
+        lateinit var subscription: Subscription
+
+        val bus = eventBus {
+            subscription = on<UserCreated> {
+                handle {
+                    executed++
+                }
+            }
+        }
+
+        subscription.dispose()
+        subscription.dispose()
+        subscription.close()
+
+        bus.emit(UserCreated(1))
+
+        assertTrue(subscription.isDisposed)
+        assertEquals(0, executed)
+
+        bus.close()
+    }
+
+    @Test
+    fun `구독마다 고유한 식별자를 부여한다`() {
+        lateinit var first: Subscription
+        lateinit var second: Subscription
+
+        val bus = eventBus {
+            first = on<UserCreated> {
+                handle {}
+            }
+
+            second = on<UserCreated> {
+                handle {}
+            }
+        }
+
+        assertTrue(second.id > first.id)
+
+        bus.close()
+    }
+
+    @Test
+    fun `이벤트 발행 중 구독을 해제해도 현재 발행은 유지한다`() {
+        var firstExecuted = false
+        var secondExecuted = false
+
+        lateinit var secondSubscription: Subscription
+
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    firstExecuted = true
+                    secondSubscription.dispose()
+                }
+            }
+
+            secondSubscription = on<UserCreated> {
+                handle {
+                    secondExecuted = true
+                }
+            }
+        }
+
+        bus.emit(UserCreated(1))
+
+        assertTrue(firstExecuted)
+        assertTrue(secondExecuted)
+
+        secondExecuted = false
+
+        bus.emit(UserCreated(2))
+
+        assertFalse(secondExecuted)
+
+        bus.close()
+    }
+
+    @Test
+    fun `이벤트 버스를 종료하면 모든 구독이 제거된다`() {
+        var executed = false
+
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    executed = true
+                }
+            }
+        }
+
+        bus.close()
+
+        assertTrue(bus.isClosed)
+
+        assertFailsWith<IllegalStateException> {
+            bus.emit(UserCreated(1))
+        }
+
+        assertFalse(executed)
+    }
+
+    @Test
+    fun `이벤트 버스를 여러 번 종료해도 안전하다`() {
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {}
+            }
+        }
+
+        bus.close()
+        bus.close()
+
+        assertTrue(bus.isClosed)
+    }
+
+    @Test
+    fun `종료된 이벤트 버스에는 구독할 수 없다`() {
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {}
+            }
+        }
+
+        bus.close()
+
+        assertFailsWith<IllegalStateException> {
+            bus.subscribe<UserCreated> {}
         }
     }
 
     @Test
-    fun `EventBus 별로 구독을 독립적으로 관리한다`() {
-        val firstBus = EventBus()
-        val secondBus = EventBus()
+    fun `use 블록을 벗어나면 이벤트 버스를 종료한다`() {
+        lateinit var busReference: EventBus
 
-        var firstExecuted = false
-        var secondExecuted = false
+        eventBus {
+            on<UserCreated> {
+                handle {}
+            }
+        }.use { bus ->
+            busReference = bus
 
-        firstBus.subscribe<UserCreated> {
-            firstExecuted = true
+            assertFalse(bus.isClosed)
         }
 
-        secondBus.subscribe<UserCreated> {
-            secondExecuted = true
+        assertTrue(busReference.isClosed)
+    }
+
+    @Test
+    fun `여러 스레드에서 동시에 이벤트를 발행할 수 있다`() {
+        val counter = AtomicInteger(0)
+
+        val bus = eventBus {
+            on<UserCreated> {
+                handle {
+                    counter.incrementAndGet()
+                }
+            }
         }
 
-        firstBus.clear()
-        secondBus.publish(UserCreated(100))
+        val executor = Executors.newFixedThreadPool(8)
 
-        assertFalse(firstExecuted)
-        assertTrue(secondExecuted)
+        try {
+            val futures = (1..8).map {
+                executor.submit {
+                    repeat(1_000) { index ->
+                        bus.emit(UserCreated(index.toLong()))
+                    }
+                }
+            }
+
+            futures.forEach {
+                it.get()
+            }
+
+            assertEquals(8_000, counter.get())
+        } finally {
+            executor.shutdownNow()
+            bus.close()
+        }
+    }
+
+    @Test
+    fun `여러 스레드에서 동시에 구독을 등록하고 해제할 수 있다`() {
+        val subscriptions = ConcurrentLinkedQueue<Subscription>()
+        val bus = eventBus {}
+        val executor = Executors.newFixedThreadPool(4)
+
+        try {
+            val futures = (1..4).map {
+                executor.submit {
+                    repeat(1_000) {
+                        val subscription = bus.subscribe<UserCreated> {}
+                        subscriptions.add(subscription)
+                    }
+                }
+            }
+
+            futures.forEach {
+                it.get()
+            }
+
+            assertEquals(4_000, subscriptions.size)
+
+            subscriptions.forEach {
+                it.dispose()
+            }
+
+            assertEquals(
+                0,
+                bus.emit(UserCreated(1)).executedCount
+            )
+        } finally {
+            executor.shutdownNow()
+            bus.close()
+        }
+    }
+
+    @Test
+    fun `DSL에서 핸들러를 지정하지 않으면 예외가 발생한다`() {
+        assertFailsWith<IllegalArgumentException> {
+            eventBus {
+                on<UserCreated> {
+                    priority(10)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `이벤트 버스를 종료하면 모든 구독이 해제 상태가 된다`() {
+        lateinit var first: Subscription
+        lateinit var second: Subscription
+
+        val bus = eventBus {
+            first = on<UserCreated> {
+                handle {}
+            }
+
+            second = on<UserDeleted> {
+                handle {}
+            }
+        }
+
+        assertFalse(first.isDisposed)
+        assertFalse(second.isDisposed)
+
+        bus.close()
+
+        assertTrue(first.isDisposed)
+        assertTrue(second.isDisposed)
+        assertTrue(bus.isClosed)
+    }
+
+    @Test
+    fun `이미 해제된 구독이 있어도 이벤트 버스를 정상적으로 종료한다`() {
+        lateinit var first: Subscription
+        lateinit var second: Subscription
+
+        val bus = eventBus {
+            first = on<UserCreated> {
+                handle {}
+            }
+
+            second = on<UserDeleted> {
+                handle {}
+            }
+        }
+
+        first.dispose()
+
+        bus.close()
+
+        assertTrue(first.isDisposed)
+        assertTrue(second.isDisposed)
+        assertTrue(bus.isClosed)
     }
 }
